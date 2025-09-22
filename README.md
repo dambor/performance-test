@@ -75,13 +75,17 @@ bin/cassandra -f
 bin/cqlsh
 ```
 
-### 4. Create Keyspace
-```sql
--- In cqlsh
-CREATE KEYSPACE transactions 
-WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
+### 4. Create Schema
+```bash
+# Run the schema file to create keyspace and all tables
+bin/cqlsh -f /path/to/your/schema.cql
 
-USE transactions;
+# Or if the schema.cql is in your project directory:
+bin/cqlsh -f ~/your-project/schema.cql
+
+# Verify keyspace and tables were created
+bin/cqlsh -e "DESCRIBE KEYSPACES;"
+bin/cqlsh -k transactions -e "DESCRIBE TABLES;"
 ```
 
 ## Environment Configuration
