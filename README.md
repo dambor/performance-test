@@ -1,4 +1,4 @@
-# Cassandra POC Test Suite
+# HCD Test Suite
 
 This repository contains three performance tests for Cassandra/HCD:
 1. **Atomicity Tests** - Validates ACID guarantees for ledger operations
