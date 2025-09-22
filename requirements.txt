@@ -1,0 +1,38 @@
+# AstraDB Transaction Ingest POC Requirements
+# Compatible with Python 3.8 - 3.12
+
+# Core database drivers
+cassandra-driver==3.29.1
+
+# Async HTTP client for additional API calls if needed
+aiohttp==3.9.1
+
+# Environment variable management
+python-dotenv==1.0.0
+
+# Data validation and parsing (compatible with Python 3.13)
+pydantic>=2.6.0,<3.0.0
+
+# Enhanced logging and monitoring
+structlog==23.2.0
+
+# Performance and profiling (optional)
+psutil==5.9.6
+
+# Testing (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Development tools (optional)
+black==23.11.0
+isort==5.12.0
+mypy==1.7.1
+
+# Additional utilities
+click==8.1.7  # For CLI interface
+colorama==0.4.6  # Colored terminal output
+tqdm==4.66.1  # Progress bars
+
+# Alternative: If you still have issues with Pydantic, uncomment the line below
+# and comment out the pydantic line above
+# pydantic==2.8.2

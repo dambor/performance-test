@@ -1,0 +1,6 @@
+Hyper-Converged Database Preview is offered under a commercial license,
+which may be viewed on the DataStax website at:
+https://www.datastax.com/legal/msa
+
+And Preview terms:
+https://www.datastax.com/legal/previewterms
