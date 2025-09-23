@@ -1,4 +1,0 @@
-DSVersion=1.2.3
-DSMajorVersion=1
-DSMinorVersion=2
-DSPatchVersion=3

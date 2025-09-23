@@ -70,3 +70,4 @@ hcd-*.tar.gz
 # Test outputs
 test_results/
 performance_reports/
+hcd-install/
