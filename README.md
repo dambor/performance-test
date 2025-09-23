@@ -45,8 +45,7 @@ pip install cassandra-driver python-dotenv
 mkdir -p ~/hcd
 cd ~/hcd
 
-# Download HCD tarball (replace with latest version)
-curl -O https://downloads.datastax.com/hcd/hcd-1.2.0-bin.tar.gz
+# Download HCD tarball using the link provided by DataStax support team
 
 # Extract
 tar -xzf hcd-1.2.0-bin.tar.gz
