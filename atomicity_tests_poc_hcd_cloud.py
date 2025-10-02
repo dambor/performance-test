@@ -16,6 +16,7 @@ from typing import List, Dict, Optional, Tuple, Set
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from cassandra.policies import WhiteListRoundRobinPolicy
 
 from cassandra.cluster import Cluster
 from cassandra.auth import PlainTextAuthProvider
@@ -457,7 +458,8 @@ class AtomicityTestClient:
             contact_points=self.config["contact_points"],
             port=self.config["port"],
             auth_provider=auth_provider,
-            load_balancing_policy=DCAwareRoundRobinPolicy(local_dc=self.config["datacenter"]),
+            # CRITICAL: Use WhiteListRoundRobinPolicy to prevent node discovery
+            load_balancing_policy=WhiteListRoundRobinPolicy(self.config["contact_points"]),
             compression=True,
             protocol_version=4,
             control_connection_timeout=10,
