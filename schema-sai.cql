@@ -8,7 +8,7 @@
 -- For local HCD/Cassandra installations
 CREATE KEYSPACE IF NOT EXISTS transactions
 WITH replication = {
-    'class': 'SimpleStrategy',
+    'class': 'SimpleStrategy', -- places replicas in a simple, round-robin fashion around the ring 
     'replication_factor': 1
 };
 
@@ -31,7 +31,9 @@ USE transactions;
 
 CREATE TABLE IF NOT EXISTS transactions (
     -- Primary Key
-    transaction_id UUID PRIMARY KEY,
+    -- The UUID determines which node stores the data. 
+    -- Random UUIDs = perfect data distribution across your cluster, so you can efficiently query by that UUID.​
+    transaction_id UUID PRIMARY KEY, 
     
     -- Card and Transaction Details
     card_number TEXT,
@@ -66,54 +68,83 @@ CREATE TABLE IF NOT EXISTS transactions (
     -- Financial Information
     processing_fee DECIMAL
 ) WITH 
-    compaction = {
+    -- Compaction in Cassandra is the process of merging SSTables
+    -- SizeTieredCompactionStrategy (STCS)
+    -- Default compaction strategy for many workloads (especially write-heavy ones).
+    -- Groups SSTables of similar sizes ("tiers") and merges them into a larger SSTable.
+    -- The goal: fewer, bigger SSTables → faster reads and better space utilization.
+    --  Works best with write-heavy, append-like workloads where updates are less frequent.
+    compaction = {  
         'class': 'SizeTieredCompactionStrategy',
-        'max_threshold': 32,
-        'min_threshold': 4
+        'max_threshold': 32, -- At most 32 SSTables of similar size are compacted together
+        'min_threshold': 4 -- At least 4 SSTables of similar size must exist
     }
-    AND compression = {
+    AND compression = { -- reduces the size of these SSTables by encoding the data into smaller chunks
         'chunk_length_in_kb': 64,
         'class': 'LZ4Compressor'
     }
     AND gc_grace_seconds = 864000;  -- 10 days
 
 -- =====================================================================
--- SECONDARY INDEXES FOR QUERY PATTERNS
+-- SECONDARY INDEXES USING SAI (STORAGE-ATTACHED INDEXING)
 -- =====================================================================
 
--- Note: HCD supports multiple secondary indexes per table
--- For best performance, consider using SAI (Storage-Attached Indexing)
--- Traditional 2i indexes are shown below, but SAI is recommended for production
+-- IMPORTANT: HCD supports two types of indexes:
+-- 1. Traditional Secondary Indexes (2i): Maximum 1 per table
+-- 2. Storage-Attached Indexes (SAI): Maximum 50 per table
+--
+-- SAI Best Practices:
+-- - Index HIGH cardinality columns (many unique values)
+-- - AVOID low cardinality columns (few unique values like status, gateway)
+-- - Low cardinality indexes waste space and don't improve performance
+-- - For low cardinality queries, use separate partitioned tables instead
 
--- Traditional Secondary Indexes (2i)
-CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions (timestamp);
-CREATE INDEX IF NOT EXISTS idx_transactions_merchant ON transactions (merchant_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions (status);
-CREATE INDEX IF NOT EXISTS idx_transactions_gateway ON transactions (gateway_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_currency ON transactions (currency);
-CREATE INDEX IF NOT EXISTS idx_transactions_country ON transactions (location_country);
+-- HIGH CARDINALITY - Good for SAI (many unique values per column)
+CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_timestamp 
+    ON transactions (timestamp) USING 'StorageAttachedIndex';
 
--- Alternative: Use SAI for better performance (recommended for HCD/Cassandra 4+)
--- Uncomment these and comment out the 2i indexes above if you want to use SAI:
+CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_merchant 
+    ON transactions (merchant_id) USING 'StorageAttachedIndex';
 
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_timestamp 
---     ON transactions (timestamp) USING 'StorageAttachedIndex';
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_merchant 
---     ON transactions (merchant_id) USING 'StorageAttachedIndex';
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_status 
---     ON transactions (status) USING 'StorageAttachedIndex';
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_gateway 
---     ON transactions (gateway_id) USING 'StorageAttachedIndex';
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_currency 
---     ON transactions (currency) USING 'StorageAttachedIndex';
--- CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_country 
---     ON transactions (location_country) USING 'StorageAttachedIndex';
+CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_country 
+    ON transactions (location_country) USING 'StorageAttachedIndex';
 
--- Note on SAI vs 2i:
--- SAI (Storage-Attached Indexing) is more efficient and scalable than traditional 2i
--- SAI uses less disk space and provides better query performance
--- SAI supports multiple indexes per table without performance degradation
--- Use SAI for production workloads when available (HCD, Cassandra 4+, AstraDB)
+CREATE CUSTOM INDEX IF NOT EXISTS sai_transactions_risk_score 
+    ON transactions (risk_score) USING 'StorageAttachedIndex';
+
+-- Note: risk_score is continuous (0.0-1.0), so has high cardinality
+-- Useful for range queries like: WHERE risk_score > 0.8
+
+-- LOW CARDINALITY - DO NOT INDEX with SAI (few unique values)
+-- These columns commented out - use partitioned tables instead:
+
+-- CREATE CUSTOM INDEX sai_transactions_status      -- Only 3-4 values: approved/declined/pending
+-- CREATE CUSTOM INDEX sai_transactions_gateway     -- Only 3 values: VISA/MASTERCARD/AMEX
+-- CREATE CUSTOM INDEX sai_transactions_currency    -- Only 5-10 values: USD/EUR/GBP/etc
+
+-- For low cardinality queries, use these alternative patterns:
+-- 1. Separate tables partitioned by the low cardinality field
+-- 2. Filter in application layer after retrieving by high cardinality field
+-- 3. Use ALLOW FILTERING sparingly (only for small result sets)
+
+-- Example of better approach for status queries:
+-- CREATE TABLE transactions_by_status (
+--     status TEXT,
+--     timestamp TIMESTAMP,
+--     transaction_id UUID,
+--     PRIMARY KEY ((status), timestamp, transaction_id)
+-- );
+
+-- Cardinality Guidelines:
+-- High Cardinality (Good for SAI):
+--   - UUIDs, timestamps, merchant_ids, card_numbers
+--   - Columns where each value appears in < 5% of rows
+--   - Columns with 100+ distinct values
+--
+-- Low Cardinality (Bad for SAI):
+--   - Boolean fields, status codes, categories
+--   - Columns where each value appears in > 10% of rows
+--   - Columns with < 20 distinct values
 
 -- =====================================================================
 -- TIME-SERIES TABLES FOR ANALYTICS AND REPORTING
@@ -242,29 +273,35 @@ CREATE TABLE IF NOT EXISTS card_ledger (
 -- MATERIALIZED VIEWS FOR OPTIMIZED QUERIES
 -- =====================================================================
 
--- Note: Materialized views are an alternative to creating separate tables
--- They are automatically maintained by Cassandra but have performance overhead
--- For high-write workloads, consider separate tables with application-level writes
+-- Note: Materialized views are DISABLED by default in HCD
+-- To enable: set 'enable_materialized_views: true' in cassandra.yaml
+-- 
+-- With SAI indexes enabled (which support up to 50 indexes per table),
+-- materialized views are generally NOT needed for most use cases.
+-- SAI provides flexible querying without the write overhead of materialized views.
+--
+-- If you need materialized views for specific denormalization patterns,
+-- uncomment below and enable them in cassandra.yaml first.
 
--- Transactions by merchant (alternative to separate table)
-CREATE MATERIALIZED VIEW IF NOT EXISTS transactions_by_merchant AS
-    SELECT transaction_id, merchant_id, merchant_name, timestamp, amount, currency, status
-    FROM transactions
-    WHERE transaction_id IS NOT NULL 
-    AND merchant_id IS NOT NULL 
-    AND timestamp IS NOT NULL
-    PRIMARY KEY ((merchant_id), timestamp, transaction_id)
-    WITH CLUSTERING ORDER BY (timestamp DESC, transaction_id ASC);
+-- Transactions by merchant (alternative to SAI index)
+-- CREATE MATERIALIZED VIEW IF NOT EXISTS transactions_by_merchant AS
+--     SELECT transaction_id, merchant_id, merchant_name, timestamp, amount, currency, status
+--     FROM transactions
+--     WHERE transaction_id IS NOT NULL 
+--     AND merchant_id IS NOT NULL 
+--     AND timestamp IS NOT NULL
+--     PRIMARY KEY ((merchant_id), timestamp, transaction_id)
+--     WITH CLUSTERING ORDER BY (timestamp DESC, transaction_id ASC);
 
--- Transactions by status and time (for monitoring dashboards)
-CREATE MATERIALIZED VIEW IF NOT EXISTS transactions_by_status_time AS
-    SELECT transaction_id, status, timestamp, amount, merchant_id, risk_score
-    FROM transactions
-    WHERE transaction_id IS NOT NULL 
-    AND status IS NOT NULL 
-    AND timestamp IS NOT NULL
-    PRIMARY KEY ((status), timestamp, transaction_id)
-    WITH CLUSTERING ORDER BY (timestamp DESC, transaction_id ASC);
+-- Transactions by status and time (alternative to SAI index)
+-- CREATE MATERIALIZED VIEW IF NOT EXISTS transactions_by_status_time AS
+--     SELECT transaction_id, status, timestamp, amount, merchant_id, risk_score
+--     FROM transactions
+--     WHERE transaction_id IS NOT NULL 
+--     AND status IS NOT NULL 
+--     AND timestamp IS NOT NULL
+--     PRIMARY KEY ((status), timestamp, transaction_id)
+--     WITH CLUSTERING ORDER BY (timestamp DESC, transaction_id ASC);
 
 -- =====================================================================
 -- USER DEFINED TYPES (UDTs) FOR COMPLEX DATA
@@ -354,45 +391,71 @@ Schema Design Notes:
    - Time-series tables use date/time as partition key for temporal queries
    - Materialized views provide alternative access patterns
 
-2. INDEXING STRATEGY:
-   - Multiple secondary indexes supported (both 2i and SAI)
-   - SAI (Storage-Attached Indexing) recommended for better performance
-   - Traditional 2i indexes work but have higher overhead
-   - For production: prefer SAI over 2i for scalability
+2. HCD INDEXING WITH SAI:
+   - HCD supports two index types: Traditional 2i (1 per table) and SAI (50 per table)
+   - SAI (Storage-Attached Indexing) is the recommended approach
+   - SAI provides better performance, lower storage overhead, and more flexibility
+   - Supports complex queries: inequalities, OR predicates, nested boolean logic
+   - Indexes are created at ingest time for immediate query coverage
+   - Requires Cassandra 4.x/5.0+ (included in HCD)
 
-3. MULTI-TABLE WRITES:
+3. SAI PERFORMANCE CONSIDERATIONS:
+   - Works best with fast block storage (NVMe SSDs, EBS)
+   - Requires adequate vCPU for write-heavy indexed workloads
+   - Lower storage overhead compared to traditional 2i indexes
+   - Only create indexes on columns you frequently query
+   - Monitor per-node data density (certified up to 150TB/node, but verify for indexed workloads)
+
+4. SAI QUERY CAPABILITIES:
+   - Equality: WHERE merchant_id = 'MER_123'
+   - Inequality: WHERE risk_score > 0.8
+   - Multiple conditions: WHERE status = 'approved' AND amount > 1000
+   - OR predicates: WHERE status = 'declined' OR status = 'failed'
+   - Collection queries: WHERE tags CONTAINS 'fraud'
+   - Text search with Lucene analyzers (HCD version dependent)
+
+5. MULTI-TABLE WRITES:
    - Write to main table + high_risk_transactions in real-time
    - Use batch statements with retry logic for consistency
    - Implement Dead Letter Queue for failed writes
    - Aggregate stats tables via periodic batch jobs (not real-time)
+   - SAI indexes updated automatically on write
 
-4. COMPACTION:
+6. COMPACTION:
    - SizeTiered for write-heavy main table
    - TimeWindow for time-series data with TTL
    - Adjust based on actual workload patterns
 
-5. TTL STRATEGY:
+7. TTL STRATEGY:
    - Longer retention for main transactions
    - Shorter TTL for aggregated stats and metrics
    - Configurable based on compliance requirements
 
-6. CONSISTENCY:
+8. CONSISTENCY:
    - Use LOCAL_QUORUM for balanced performance and consistency
    - Consider QUORUM for critical ledger operations
 
-7. PERFORMANCE CONSIDERATIONS:
+9. PERFORMANCE CONSIDERATIONS:
    - Batch size optimization (50-100 transactions per batch)
    - Connection pooling and prepared statements
    - Monitor partition sizes and hotspots
-   - Use SAI for multiple indexed queries
+   - SAI provides efficient query performance across multiple indexed columns
 
-8. AGGREGATIONS:
-   - Don't update stats tables in real-time (causes bottlenecks)
-   - Use periodic batch jobs to calculate aggregations
-   - Alternative: Use COUNTER tables for simple increments only
+10. AGGREGATIONS:
+    - Don't update stats tables in real-time (causes bottlenecks)
+    - Use periodic batch jobs to calculate aggregations
+    - Alternative: Use COUNTER tables for simple increments only
 
-9. MATERIALIZED VIEWS:
-   - Convenient but have write overhead
-   - For high-throughput: use separate tables with app-level writes
-   - Good for read-heavy workloads with moderate writes
+11. MATERIALIZED VIEWS vs SAI:
+    - With SAI, materialized views may be less necessary
+    - Views still useful for frequently accessed denormalized data patterns
+    - Views have write overhead (each write updates base table + all views)
+    - For very high-throughput: SAI indexes + base table may be sufficient
+    - Evaluate based on your specific query patterns and performance requirements
+
+12. STORAGE REQUIREMENTS:
+    - Maintain 20% free disk space for compactions and indexing
+    - SAI uses less storage than traditional 2i but still adds overhead
+    - Monitor disk usage as you add indexes
+    - Fast local storage (NVMe) recommended for best SAI performance
 */
